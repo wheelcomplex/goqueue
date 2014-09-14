@@ -7,9 +7,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
-	"net/http"
-	_ "net/http/pprof"
+	//"log"
+	//"net/http"
+	//_ "net/http/pprof"
 	"runtime"
 	//"sync"
 	"time"
@@ -56,7 +56,7 @@ func runStack() {
 	*/
 	incount := make(chan int64, 1024)
 	outcount := make(chan int64, 1024)
-	stack := goqueue.NewStack(int64(*bufNum), -int64(*sizeNum), *discardFlag)
+	stack := goqueue.NewStack(int64(*bufNum), int64(*sizeNum), *discardFlag)
 	for i := 0; i < *prodNum; i++ {
 		go stackIn(stack, incount)
 	}
@@ -68,9 +68,9 @@ func runStack() {
 	for i := int(1); i <= (*timeNum); i++ {
 		time.Sleep(1e9)
 		if i == 1 {
-			fmt.Printf("%d", i)
+			fmt.Printf("%d-%d", i, stack.GetCacheSize())
 		} else {
-			fmt.Printf("-%d", i)
+			fmt.Printf(" %d-%d", i, stack.GetCacheSize())
 		}
 	}
 	fmt.Println("")
@@ -97,8 +97,8 @@ func main() {
 	timeNum = flag.Int("t", 30, "one loop time")
 	prodNum = flag.Int("P", 1, "comsummer number")
 	comsNum = flag.Int("C", 1, "productor number")
-	bufNum = flag.Int("B", 0, "buffer size of channel")
-	sizeNum = flag.Int("S", 0, "pool size of channel")
+	bufNum = flag.Int("B", 256, "buffer size of channel")
+	sizeNum = flag.Int("S", 10000, "pool size of channel")
 	discardFlag = flag.Bool("D", false, "discard flag")
 	flag.Parse()
 	if *cpuNum < 1 {
@@ -108,9 +108,9 @@ func main() {
 		*loopNum = 1
 	}
 	runtime.GOMAXPROCS(*cpuNum)
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
+	//go func() {
+	//	log.Println(http.ListenAndServe("localhost:6060", nil))
+	//}()
 	switch *mod {
 	case "stack":
 		for i := 0; i < *loopNum; i++ {
@@ -139,6 +139,9 @@ func stackIn(stack *goqueue.Stack, count chan<- int64) {
 	for {
 		in <- struct{}{}
 		inc++
+		//for i := 0; i < 2; i++ {
+		//	misc.UUID()
+		//}
 	}
 	return
 }
@@ -147,9 +150,9 @@ func stackOut(stack *goqueue.Stack, count chan<- int64) {
 	var inc int64
 	out := stack.Out()
 	for _ = range out {
-		//for i := 0; i < 3; i++ {
-		//	misc.UUID()
-		//}
+		for i := 0; i < 2; i++ {
+			misc.UUID()
+		}
 		inc++
 	}
 	count <- inc

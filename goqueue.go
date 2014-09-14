@@ -25,9 +25,9 @@ type Stack struct {
 // poolSize for stack pool size
 // discard control how to do when stack is full, true for drop new item, false for waiting
 // max item stay in stack will be input channel buffer(chanBufferSize) + output channel buffer(chanBufferSize) + poolSize
-// set poolSize <= 0 turn stack into FIFO pipe
+// set poolSize <= 0 turn stack into FIFO pipe, this is a in-storage-out forwarder
 // set poolSize < 0 for unlimited stack
-// input channel closed when stack.Close()
+// input/output channel closed when stack.Close()
 func NewStack(chanBufferSize int64, poolSize int64, discard bool) *Stack {
 	var self *Stack
 	if chanBufferSize < 0 {
@@ -84,107 +84,115 @@ func (self *Stack) pipe() {
 func (self *Stack) manager() {
 	var in interface{} = nil
 	var ok bool
-	var loop bool = true
+	var fastForward bool = true
+	defer func() {
+		// self.in already closed
+		select {
+		case <-self.exited:
+		default:
+			close(self.exited)
+		}
+		go self.flushExit()
+	}()
 	for {
-		// fast forward
-		for in = range self.in {
-			select {
-			case self.out <- in:
-				continue
-			default:
-				self.poolIn(&in)
-				// out is blocked
-				loop = false
-			}
-			if loop == false {
-				break
-			}
-		}
-		// in closed or out blocked
-		// slow forwad
-		select {
-		case in, ok = <-self.in:
-			if !ok {
-				// in closed
-				//fmt.Printf("fast forward, stack is closed when pool size %d and got in: %v\n", self.ptr, in)
-				return
-			}
-			select {
-			case self.out <- in:
-				// goto fast forward
-				loop = true
-				continue
-			default:
-				self.poolIn(&in)
-			}
-		default:
-		}
 		if self.ptr == 0 {
-			// loop back to fast forward
-			runtime.Gosched()
-			continue
+			// fast forward
+			for in = range self.in {
+				select {
+				case self.out <- in:
+					continue
+				default:
+					if self.ptr < self.max || self.max < 0 {
+						// push in
+						// ++ will slow down
+						self.ptr++
+						self.pool[self.ptr] = in
+					} else if self.discard {
+						// just discard
+					} else {
+						// pool full
+						// do not try to read more in
+						self.out <- in
+					}
+					// out is blocked
+					fastForward = false
+				}
+				if fastForward == false {
+					break
+				}
+			}
+			fastForward = false
+			println("leave FF")
 		}
-		// try to flush out when input blocked
-		select {
-		case self.out <- self.pool[self.ptr]:
-			// pop out
-			// -- will slow down
-			self.ptr--
-			//fmt.Println("flush out, stack size", self.ptr)
-		default:
+		// slow forwad
+		for fastForward == false {
+			// check input first
+			select {
+			case in, ok = <-self.in:
+				if !ok {
+					// in closed
+					return
+				}
+				select {
+				case self.out <- in:
+					continue
+				default:
+				}
+				// out blocked
+				if self.ptr < self.max || self.max < 0 {
+					// push in
+					// ++ will slow down
+					self.ptr++
+					self.pool[self.ptr] = in
+				} else if self.discard {
+					// just discard
+				} else {
+					// already full
+					// do not try to read more in
+					self.out <- in
+				}
+			default:
+			}
+			// try to flush out when input blocked
+			select {
+			case self.out <- self.pool[self.ptr]:
+				// pop out
+				// -- will slow down
+				self.ptr--
+				if self.ptr == 0 {
+					fastForward = true
+				}
+			default:
+				runtime.Gosched()
+			}
 		}
 	}
-	return
-}
-
-//
-func (self *Stack) poolIn(ptr *interface{}) {
-	if self.ptr < self.max || self.max < 0 {
-		// push in
-		// ++ will slow down
-		self.ptr++
-		self.pool[self.ptr] = *ptr
-	} else if self.discard {
-		// just discard
-		//fmt.Println("stack block for full, discarded, max size", self.max, "current", self.ptr)
-	} else {
-		// already full
-		//fmt.Println("stack block for full, max size", self.max, "current", self.ptr)
-		// blocked if Out is blocked, and we do not read input for pool is full
-		// do not try to read more in
-		self.out <- *ptr
-	}
-	return
 }
 
 //
 func (self *Stack) flushExit() {
 	// blocking flush in buffer
-	//fmt.Println("befor in buffer flush, pool size", self.ptr, "in buffer len", len(self.in))
 	var in interface{}
 	for in = range self.in {
 		if self.ptr < self.max || self.max < 0 {
 			self.ptr++
 			self.pool[self.ptr] = in
-			//fmt.Println("flush in, pool size", self.ptr, "in buffer len", len(self.in))
 		} else {
 			if self.discard {
-				//fmt.Println("out channel blocked, and pool reach max size, discard", self.ptr)
+				// discarded
 			} else {
-				//fmt.Println("out channel blocked, and pool reach max size, blocking", self.ptr)
+				// blocked write
 				self.out <- in
 			}
 		}
 	}
-	//fmt.Println("befor out buffer flush, pool size", self.ptr, "out buffer len", len(self.out))
 	// flush pool to out
 	for self.ptr > 0 {
+		// blocked write
 		self.out <- self.pool[self.ptr]
 		// pop out
 		self.ptr--
-		//fmt.Println("out buffer flush, pool size", self.ptr, "out buffer len", len(self.out))
 	}
-	//fmt.Println("after out buffer flush, pool size", self.ptr, "out buffer len", len(self.out))
 	close(self.out)
 	// release memory
 	for key, _ := range self.pool {
@@ -198,17 +206,11 @@ func (self *Stack) flushExit() {
 // write to a Closed self.In() will rise panic("write at close channel")
 // user should handle panic by recover()
 func (self *Stack) Close() {
-	select {
-	case <-self.exited:
-		// already closed
-		return
-	default:
-	}
+	defer func() {
+		recover()
+	}()
 	close(self.exited)
 	close(self.in)
-	if self.max != 0 {
-		go self.flushExit()
-	}
 	return
 }
 
@@ -232,11 +234,6 @@ func (self *Stack) IsClosed() bool {
 // push in into stack, return nil for ok, if stack already closed, return error
 func (self *Stack) Push(in interface{}) error {
 	defer func() error {
-		//err := recover()
-		//if err != nil {
-		//	fmt.Println("defer-recover:", err)
-		//}
-		//return err.(error)
 		return recover().(error)
 	}()
 	self.in <- in
@@ -256,6 +253,11 @@ func (self *Stack) In() chan<- interface{} {
 // read from a closed channel will got <nil>
 func (self *Stack) Out() <-chan interface{} {
 	return self.out
+}
+
+// GetCacheSize return items number in stack(include channel buffered)
+func (self *Stack) GetCacheSize() int64 {
+	return self.ptr + int64(len(self.in)) + int64(len(self.out))
 }
 
 // Lock Free Stack without channel
