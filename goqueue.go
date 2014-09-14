@@ -6,7 +6,7 @@ package goqueue
 
 //import "fmt"
 
-//import "time"
+import "errors"
 import "runtime"
 
 // FILO/FIFO stack with max item limit and discard support
@@ -230,12 +230,33 @@ func (self *Stack) IsClosed() bool {
 	return false
 }
 
-// push in into stack, return nil for ok, if stack already closed, return error
-func (self *Stack) Push(in interface{}) error {
+// SetPoolSize return old PoolSize
+// and set pool size to size
+func (self *Stack) SetPoolSize(size int64) int64 {
+	old := self.max
+	self.max = size
+	return old
+}
+
+// push in into stack, return nil for ok
+// return error when stack is full and blocking == false
+//
+func (self *Stack) Push(in interface{}, blocking bool) error {
 	defer func() error {
 		return recover().(error)
 	}()
-	self.in <- in
+	select {
+	case <-self.exited:
+		return errors.New("stack has closed")
+	default:
+	}
+	if blocking {
+		self.in <- in
+	} else if self.max == self.ptr {
+		return errors.New("stack is full")
+	} else {
+		self.in <- in
+	}
 	return nil
 }
 
