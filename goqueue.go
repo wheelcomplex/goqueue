@@ -122,7 +122,6 @@ func (self *Stack) manager() {
 				}
 			}
 			fastForward = false
-			println("leave FF")
 		}
 		// slow forwad
 		for fastForward == false {

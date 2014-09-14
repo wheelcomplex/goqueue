@@ -7,9 +7,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	//"log"
-	//"net/http"
-	//_ "net/http/pprof"
+	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"runtime"
 	//"sync"
 	"time"
@@ -108,9 +108,9 @@ func main() {
 		*loopNum = 1
 	}
 	runtime.GOMAXPROCS(*cpuNum)
-	//go func() {
-	//	log.Println(http.ListenAndServe("localhost:6060", nil))
-	//}()
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 	switch *mod {
 	case "stack":
 		for i := 0; i < *loopNum; i++ {
@@ -150,9 +150,9 @@ func stackOut(stack *goqueue.Stack, count chan<- int64) {
 	var inc int64
 	out := stack.Out()
 	for _ = range out {
-		for i := 0; i < 2; i++ {
-			misc.UUID()
-		}
+		//for i := 0; i < 2; i++ {
+		//	misc.UUID()
+		//}
 		inc++
 	}
 	count <- inc
