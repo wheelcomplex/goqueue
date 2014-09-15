@@ -4,9 +4,6 @@
 
 package goqueue
 
-//import "fmt"
-
-import "errors"
 import "runtime"
 
 // FILO/FIFO stack with max item limit and discard support
@@ -102,18 +99,88 @@ func (self *Stack) manager() {
 				case self.out <- in:
 					continue
 				default:
-					if self.ptr < self.max || self.max < 0 {
-						// push in
-						// ++ will slow down
-						self.ptr++
-						self.pool[self.ptr] = in
-					} else if self.discard {
-						// just discard
-					} else {
-						// pool full
-						// do not try to read more in
-						self.out <- in
-					}
+					// push in
+					// ++ will slow down
+					self.ptr++
+					self.pool[self.ptr] = in
+					// out is blocked
+					fastForward = false
+				}
+				if fastForward == false {
+					break
+				}
+			}
+			fastForward = false
+		}
+		// slow forwad
+		for fastForward == false {
+			// check input first
+			select {
+			case in, ok = <-self.in:
+				if !ok {
+					// in closed
+					return
+				}
+				select {
+				case self.out <- in:
+					continue
+				default:
+				}
+				// out blocked
+				if self.ptr < self.max || self.max < 0 {
+					// push in
+					// ++ will slow down
+					self.ptr++
+					self.pool[self.ptr] = in
+				} else if self.discard {
+					// just discard
+				} else {
+					// already full
+					// do not try to read more in
+					self.out <- in
+				}
+			case self.out <- self.pool[self.ptr]:
+				// pop out
+				// -- will slow down
+				self.ptr--
+				if self.ptr == 0 {
+					fastForward = true
+				}
+			}
+		}
+	}
+}
+
+// manager forward input item to output
+// save item to pool when output blocked
+// if pool size reach max(then mean output blocked),
+// and self.discard == true, new input item discarded,
+// otherwise blocked at output
+func (self *Stack) manager2() {
+	var in interface{} = nil
+	var ok bool
+	var fastForward bool = true
+	defer func() {
+		// self.in already closed
+		select {
+		case <-self.exited:
+		default:
+			close(self.exited)
+		}
+		go self.flushExit()
+	}()
+	for {
+		if self.ptr == 0 {
+			// fast forward
+			for in = range self.in {
+				select {
+				case self.out <- in:
+					continue
+				default:
+					// push in
+					// ++ will slow down
+					self.ptr++
+					self.pool[self.ptr] = in
 					// out is blocked
 					fastForward = false
 				}
@@ -238,26 +305,37 @@ func (self *Stack) SetPoolSize(size int64) int64 {
 	return old
 }
 
-// push in into stack, return nil for ok
-// return error when stack is full and blocking == false
-//
-func (self *Stack) Push(in interface{}, blocking bool) error {
-	defer func() error {
-		return recover().(error)
+const (
+	PUSH_OK int = iota
+	PUSH_FULL
+	PUSH_CLOSED
+)
+
+// push in into stack, return PUSH_OK for ok
+// return PUSH_FULL when stack is full and blocking == false
+// return PUSH_CLOSED when stack is closed
+func (self *Stack) Push(in interface{}, blocking bool) int {
+	defer func() int {
+		if recover() != nil {
+			return PUSH_CLOSED
+		}
+		return PUSH_OK
 	}()
 	select {
 	case <-self.exited:
-		return errors.New("stack has closed")
+		return PUSH_CLOSED
 	default:
 	}
 	if blocking {
 		self.in <- in
-	} else if self.max == self.ptr {
-		return errors.New("stack is full")
 	} else {
-		self.in <- in
+		select {
+		case self.in <- in:
+		default:
+			return PUSH_FULL
+		}
 	}
-	return nil
+	return PUSH_OK
 }
 
 // In return channel for stack push

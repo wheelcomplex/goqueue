@@ -136,12 +136,15 @@ func stackIn(stack *goqueue.Stack, count chan<- int64) {
 		count <- inc
 		//wg.Done()
 	}()
+	//tk := time.NewTicker(500)
+	//defer tk.Stop()
 	for {
 		in <- struct{}{}
 		inc++
 		//for i := 0; i < 2; i++ {
 		//	misc.UUID()
 		//}
+		//<-tk.C
 	}
 	return
 }
@@ -149,10 +152,13 @@ func stackIn(stack *goqueue.Stack, count chan<- int64) {
 func stackOut(stack *goqueue.Stack, count chan<- int64) {
 	var inc int64
 	out := stack.Out()
+	//tk := time.NewTicker(500)
+	//defer tk.Stop()
 	for _ = range out {
 		//for i := 0; i < 2; i++ {
 		//	misc.UUID()
 		//}
+		//<-tk.C
 		inc++
 	}
 	count <- inc
